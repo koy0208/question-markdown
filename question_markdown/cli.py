@@ -277,6 +277,10 @@ def handle_create(args: argparse.Namespace) -> int:
     # マークダウンファイルの読み込み
     entry_data, body = md_handler.prepare_entry_data(args.file, args.title, args.draft)
 
+    # 画像のアップロードと置換処理を実行
+    base_dir = os.path.dirname(os.path.abspath(args.file))
+    body = md_handler.upload_and_replace_images(body, config, base_dir)
+
     # カテゴリの処理
     if args.categories:
         entry_data["categories"] = parse_categories(args.categories)
@@ -340,6 +344,10 @@ def handle_update(args: argparse.Namespace) -> int:
 
     # マークダウンファイルの読み込み
     entry_data, body = md_handler.prepare_entry_data(args.file, args.title, args.draft)
+
+    # 画像のアップロードと置換処理を実行
+    base_dir = os.path.dirname(os.path.abspath(args.file))
+    body = md_handler.upload_and_replace_images(body, config, base_dir)
 
     # 記事IDの処理
     entry_id = None
