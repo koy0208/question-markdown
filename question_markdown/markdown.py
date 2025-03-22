@@ -231,7 +231,13 @@ class MarkdownHandler:
         if draft is not None:
             entry_data["draft"] = draft
         elif "draft" in frontmatter:
-            entry_data["draft"] = frontmatter["draft"]
+            # YAMLでは様々な形式でブール値を表現できるため、明示的に変換
+            draft_value = frontmatter["draft"]
+            if isinstance(draft_value, str):
+                draft_value = draft_value.lower()
+                entry_data["draft"] = draft_value in ["true", "yes", "on", "y", "1"]
+            else:
+                entry_data["draft"] = bool(draft_value)
         else:
             entry_data["draft"] = False
 

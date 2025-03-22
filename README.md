@@ -72,9 +72,12 @@ chmod +x question-md
 ### 記事の更新
 
 ```bash
-./question-md update <entry_id> path/to/markdown.md
-./question-md update <entry_id> path/to/markdown.md --title "新しいタイトル" --categories "カテゴリ1,カテゴリ2" --draft
+./question-md update path/to/markdown.md  # マークダウンファイルから記事IDを自動取得
+./question-md update --entry-id <entry_id> path/to/markdown.md  # 記事IDを明示的に指定
+./question-md update path/to/markdown.md --title "新しいタイトル" --categories "カテゴリ1,カテゴリ2" --draft
 ```
+
+マークダウンファイルのFrontMatterに`id`が含まれている場合、`--entry-id`オプションを省略できます。
 
 ### 下書き管理
 

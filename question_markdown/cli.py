@@ -78,17 +78,19 @@ def create_parser() -> argparse.ArgumentParser:
         "--title", help="記事タイトル（省略時はファイルから取得）"
     )
     create_parser.add_argument("--categories", help="カテゴリ（カンマ区切り）")
-    create_parser.add_argument("--draft", action="store_true", help="下書きとして保存")
+    create_parser.add_argument("--draft", help="下書きとして保存")
 
     # updateコマンド
     update_parser = subparsers.add_parser("update", help="記事を更新")
-    update_parser.add_argument("entry_id", help="記事ID")
+    update_parser.add_argument(
+        "--entry-id", help="記事ID（省略時はマークダウンファイルから取得）"
+    )
     update_parser.add_argument("file", help="マークダウンファイルパス")
     update_parser.add_argument(
         "--title", help="記事タイトル（省略時はファイルから取得）"
     )
     update_parser.add_argument("--categories", help="カテゴリ（カンマ区切り）")
-    update_parser.add_argument("--draft", action="store_true", help="下書きとして保存")
+    update_parser.add_argument("--draft", help="下書きとして保存")
 
     # draftsコマンド
     drafts_parser = subparsers.add_parser("drafts", help="下書き管理")
@@ -279,12 +281,15 @@ def handle_create(args: argparse.Namespace) -> int:
     if args.categories:
         entry_data["categories"] = parse_categories(args.categories)
 
+    # デバッグ情報の表示
+    print(f"下書きフラグ: {entry_data.get('draft')}")
+
     # 記事の作成
     success, entry_id, error = api.create_entry(
         entry_data["title"],
         body,
         entry_data.get("categories"),
-        entry_data.get("draft", False),
+        entry_data["draft"],  # 明示的にdraftフラグを渡す
     )
 
     if not success:
@@ -333,15 +338,30 @@ def handle_update(args: argparse.Namespace) -> int:
     # マークダウンハンドラの初期化
     md_handler = MarkdownHandler(config.get("default_output_dir"))
 
-    # 記事IDの処理（URLからの抽出）
-    entry_id = extract_entry_id_from_url(args.entry_id) or args.entry_id
-
     # マークダウンファイルの読み込み
     entry_data, body = md_handler.prepare_entry_data(args.file, args.title, args.draft)
+
+    # 記事IDの処理
+    entry_id = None
+    if args.entry_id:
+        # コマンドライン引数から記事IDを取得
+        entry_id = extract_entry_id_from_url(args.entry_id) or args.entry_id
+    elif "id" in entry_data:
+        # マークダウンファイルから記事IDを取得
+        entry_id = entry_data["id"]
+
+    if not entry_id:
+        print_error(
+            "記事IDが指定されておらず、マークダウンファイルにも記事IDが含まれていません。"
+        )
+        return 1
 
     # カテゴリの処理
     if args.categories:
         entry_data["categories"] = parse_categories(args.categories)
+
+    # デバッグ情報の表示
+    print(f"下書きフラグ: {entry_data.get('draft')}")
 
     # 記事の更新
     success, error = api.update_entry(
@@ -349,7 +369,7 @@ def handle_update(args: argparse.Namespace) -> int:
         entry_data["title"],
         body,
         entry_data.get("categories"),
-        entry_data.get("draft", False),
+        entry_data["draft"],  # 明示的にdraftフラグを渡す
     )
 
     if not success:
