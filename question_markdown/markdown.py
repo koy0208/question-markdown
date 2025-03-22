@@ -5,6 +5,7 @@
 """
 
 import os
+import json
 import base64
 import hashlib
 import re
@@ -31,6 +32,18 @@ class MarkdownHandler:
         self.h2t = html2text.HTML2Text()
         self.h2t.ignore_links = False
         self.h2t.body_width = 0  # 行の折り返しを無効化
+        self.uploaded_images_file = os.path.join(
+            self.default_output_dir, "uploaded_images.json"
+        )
+        if os.path.exists(self.uploaded_images_file):
+            try:
+                with open(self.uploaded_images_file, "r", encoding="utf-8") as f:
+                    self.uploaded_images = json.load(f)
+            except Exception as e:
+                print(f"Failed to load uploaded images info: {e}")
+                self.uploaded_images = {}
+        else:
+            self.uploaded_images = {}
 
     def read_markdown_file(self, file_path: str) -> Tuple[Dict[str, Any], str]:
         """
@@ -332,11 +345,24 @@ class MarkdownHandler:
         def replacer(match):
             alt_text = match.group(1)
             image_path = match.group(2).strip()
-            # 画像は常に base_dir の 'images' サブフォルダ内にあると仮定
             abs_path = os.path.join(base_dir, "img", os.path.basename(image_path))
+            if abs_path in self.uploaded_images:
+                return self.uploaded_images[abs_path]
             result = self.upload_image(abs_path, config)
-            return result if result else match.group(0)
+            if result:
+                self.uploaded_images[abs_path] = result
+                self.save_uploaded_images()
+                return result
+            else:
+                return match.group(0)
 
         pattern = re.compile(r"!\[(.*?)\]\((?!https?://)(.*?)\)")
         new_body = pattern.sub(replacer, body)
         return new_body
+
+    def save_uploaded_images(self):
+        try:
+            with open(self.uploaded_images_file, "w", encoding="utf-8") as f:
+                json.dump(self.uploaded_images, f)
+        except Exception as e:
+            print(f"Failed to save uploaded images info: {e}")

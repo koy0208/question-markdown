@@ -8,6 +8,7 @@ import argparse
 import sys
 import os
 from typing import List, Optional, Dict, Any, Tuple
+import json
 
 from . import __version__
 from .config import get_config
@@ -16,7 +17,6 @@ from .markdown import MarkdownHandler
 from .utils import (
     format_entry_list,
     confirm_action,
-    ensure_dir_exists,
     parse_categories,
     extract_entry_id_from_url,
     print_error,
