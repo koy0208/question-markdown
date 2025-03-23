@@ -14,6 +14,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any, Union
 import html2text
+import requests
+import mimetypes
+import xml.etree.ElementTree as ET
 
 
 class MarkdownHandler:
@@ -264,11 +267,14 @@ class MarkdownHandler:
 
     def upload_image(self, image_path: str, config: dict) -> Optional[str]:
         """指定した画像ファイルをはてなフォトライフにアップロードし、[f:id:...] 形式の文字列を返す"""
-        import requests, base64, mimetypes
-        import xml.etree.ElementTree as ET
-
         if not os.path.isfile(image_path):
             print(f"画像ファイルが見つかりません: {image_path}")
+            return None
+
+        hatena_id = config.get("hatena_id")
+        api_key = config.get("api_key")
+        if not hatena_id or not api_key:
+            print("必要なはてなAPIの情報がありません")
             return None
 
         mime_type, _ = mimetypes.guess_type(image_path)
@@ -293,8 +299,6 @@ class MarkdownHandler:
 """
 
         endpoint = "https://f.hatena.ne.jp/atom/post"
-        hatena_id = config.get("hatena_id")
-        api_key = config.get("api_key")
 
         nonce = os.urandom(16)
         nonce_b64 = base64.b64encode(nonce).decode("utf-8")

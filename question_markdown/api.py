@@ -8,6 +8,11 @@ import xml.etree.ElementTree as ET
 from typing import Dict, List, Optional, Tuple, Any
 import requests
 from xml.sax.saxutils import escape
+import os
+import base64
+import hashlib
+from datetime import datetime
+import mimetypes
 
 
 class HatenaAPI:
@@ -310,3 +315,75 @@ class HatenaAPI:
             entry_data["categories"],
             draft=False,
         )
+
+    def upload_image(self, image_path: str) -> Optional[str]:
+        """指定した画像ファイルをはてなフォトライフにアップロードし、[f:id:...] 形式の文字列を返す"""
+        if not os.path.isfile(image_path):
+            print(f"画像ファイルが見つかりません: {image_path}")
+            return None
+
+        mime_type, _ = mimetypes.guess_type(image_path)
+        if not mime_type:
+            mime_type = "application/octet-stream"
+
+        try:
+            with open(image_path, "rb") as f:
+                data = f.read()
+        except IOError as e:
+            print(f"画像ファイルの読み込みに失敗しました: {e}")
+            return None
+
+        b64_data = base64.b64encode(data).decode("utf-8")
+        filename = os.path.basename(image_path)
+
+        xml_payload = f"""<?xml version="1.0" encoding="utf-8"?>
+<entry xmlns="http://purl.org/atom/ns#" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <title>{filename}</title>
+  <content mode="base64" type="{mime_type}">{b64_data}</content>
+</entry>
+"""
+
+        endpoint = "https://f.hatena.ne.jp/atom/post"
+        hatena_id = self.hatena_id
+        api_key = self.api_key
+
+        nonce = os.urandom(16)
+        nonce_b64 = base64.b64encode(nonce).decode("utf-8")
+        created = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        digest = hashlib.sha1(
+            nonce + created.encode("utf-8") + api_key.encode("utf-8")
+        ).digest()
+        password_digest = base64.b64encode(digest).decode("utf-8")
+        wsse_header = f'UsernameToken Username="{hatena_id}", PasswordDigest="{password_digest}", Nonce="{nonce_b64}", Created="{created}"'
+
+        try:
+            response = requests.post(
+                endpoint,
+                data=xml_payload.encode("utf-8"),
+                headers={"Content-Type": "application/xml", "X-WSSE": wsse_header},
+            )
+        except Exception as e:
+            print(f"画像アップロードリクエストの送信に失敗しました: {e}")
+            return None
+
+        if response.status_code != 201:
+            print(
+                f"画像アップロードに失敗しました: {response.status_code} {response.text}"
+            )
+            return None
+
+        try:
+            root = ET.fromstring(response.content)
+            syntax = None
+            for elem in root.iter():
+                if "syntax" in elem.tag:
+                    syntax = elem.text
+                    break
+            if syntax:
+                return f"[{syntax}]"
+            else:
+                print("レスポンスから[f:id]形式の情報が取得できませんでした")
+                return None
+        except ET.ParseError as e:
+            print(f"レスポンスXMLのパースに失敗しました: {e}")
+            return None
