@@ -156,63 +156,60 @@ class HatenaAPI:
         記事一覧を取得
 
         Args:
-            limit: 取得する記事数の上限
+            limit: 取得する記事数の上限（指定しない場合はすべて取得）
 
         Returns:
             (成功フラグ, 記事リスト, エラーメッセージ)
         """
         try:
-            resp = requests.get(f"{self.atom_endpoint}/entry", auth=self.auth)
-            if resp.status_code != 200:
-                return False, None, f"API エラー: {resp.status_code} - {resp.text}"
-
-            # XMLのパース
-            root = ET.fromstring(resp.content)
             entries = []
+            url = f"{self.atom_endpoint}/entry"
+            while True:
+                resp = requests.get(url, auth=self.auth)
+                if resp.status_code != 200:
+                    return False, None, f"API エラー: {resp.status_code} - {resp.text}"
 
-            # 各記事の情報を抽出
-            for entry in root.findall("atom:entry", self.namespaces):
-                # entry_idは<id>タグに格納されており、例: "tag:blog.hatena.ne.jp,2007:entry/12345678901234567"
-                raw_id = entry.find("atom:id", self.namespaces).text
-                # "entry/"以降を抽出する
-                entry_id = raw_id.split("entry/")[-1] if "entry/" in raw_id else raw_id
+                root = ET.fromstring(resp.content)
+                for entry in root.findall("atom:entry", self.namespaces):
+                    raw_id = entry.find("atom:id", self.namespaces).text
+                    entry_id = raw_id.split("-")[-1]
 
-                title = entry.find("atom:title", self.namespaces).text or ""
+                    title = entry.find("atom:title", self.namespaces).text or ""
 
-                # 更新日時
-                updated = entry.find("atom:updated", self.namespaces).text
+                    updated = entry.find("atom:updated", self.namespaces).text
 
-                # 公開状態（下書きかどうか）
-                draft_elem = entry.find(".//app:draft", self.namespaces)
-                is_draft = draft_elem is not None and draft_elem.text == "yes"
+                    draft_elem = entry.find(".//app:draft", self.namespaces)
+                    is_draft = draft_elem is not None and draft_elem.text == "yes"
 
-                # カテゴリ
-                categories = [
-                    cat.get("term")
-                    for cat in entry.findall("atom:category", self.namespaces)
-                ]
+                    categories = [
+                        cat.get("term")
+                        for cat in entry.findall("atom:category", self.namespaces)
+                    ]
 
-                # 編集用URL
-                edit_url = None
-                for link in entry.findall("atom:link", self.namespaces):
-                    if link.get("rel") == "edit":
-                        edit_url = link.get("href")
-                        break
+                    edit_url = None
+                    for link in entry.findall("atom:link", self.namespaces):
+                        if link.get("rel") == "edit":
+                            edit_url = link.get("href")
+                            break
 
-                entries.append(
-                    {
-                        "id": entry_id,
-                        "title": title,
-                        "updated": updated,
-                        "draft": is_draft,
-                        "categories": categories,
-                        "edit_url": edit_url,
-                    }
-                )
+                    entries.append(
+                        {
+                            "id": entry_id,
+                            "title": title,
+                            "updated": updated,
+                            "draft": is_draft,
+                            "categories": categories,
+                            "edit_url": edit_url,
+                        }
+                    )
 
-                if limit and len(entries) >= limit:
+                    if limit is not None and len(entries) >= limit:
+                        return True, entries[:limit], None
+
+                next_link = root.find("atom:link[@rel='next']", self.namespaces)
+                if next_link is None or not next_link.get("href"):
                     break
-
+                url = next_link.get("href")
             return True, entries, None
         except requests.RequestException as e:
             return False, None, f"リクエストエラー: {e}"

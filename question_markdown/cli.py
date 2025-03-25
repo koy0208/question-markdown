@@ -9,7 +9,7 @@ import sys
 import os
 from typing import List, Optional, Dict, Any, Tuple
 import json
-
+import re
 from . import __version__
 from .config import get_config
 from .api import HatenaAPI
@@ -56,7 +56,10 @@ def create_parser() -> argparse.ArgumentParser:
     # listコマンド
     list_parser = subparsers.add_parser("list", help="記事一覧を表示")
     list_parser.add_argument(
-        "--limit", type=int, help="取得する記事数の上限", default=None
+        "--limit",
+        type=int,
+        help="取得する記事数の上限（指定しない場合はすべて取得）",
+        default=None,
     )
     list_parser.add_argument("--draft", action="store_true", help="下書き記事のみ表示")
     list_parser.add_argument(
@@ -91,6 +94,21 @@ def create_parser() -> argparse.ArgumentParser:
     )
     update_parser.add_argument("--categories", help="カテゴリ（カンマ区切り）")
     update_parser.add_argument("--draft", help="下書きとして保存")
+
+    # getallコマンド: 過去の記事すべてを取得
+    getall_parser = subparsers.add_parser("getall", help="過去の記事すべてを取得")
+    getall_parser.add_argument(
+        "--limit",
+        type=int,
+        help="取得する記事数の上限（指定しない場合はすべて取得）",
+        default=None,
+    )
+    getall_parser.add_argument(
+        "--output-dir",
+        type=str,
+        help="記事の保存先ディレクトリ（省略時は設定の default_output_dir）",
+        default=None,
+    )
 
     # draftsコマンド
     drafts_parser = subparsers.add_parser("drafts", help="下書き管理")
@@ -190,6 +208,69 @@ def handle_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def handle_getall(args: argparse.Namespace) -> int:
+    """
+    getallコマンドの処理: 過去の記事すべてを取得して保存する
+
+    Args:
+        args: コマンドライン引数
+
+    Returns:
+        終了コード
+    """
+    config = get_config(args.config)
+    if not config.is_configured():
+        print_error(
+            "APIの認証情報が設定されていません。'question-md config --wizard'を実行してください。"
+        )
+        return 1
+
+    credentials = config.get_api_credentials()
+    api = HatenaAPI(
+        credentials["hatena_id"], credentials["blog_id"], credentials["api_key"]
+    )
+
+    # 出力先ディレクトリは、引数が指定されていればそれを、なければ設定の default_output_dir を使用
+    output_dir = (
+        args.output_dir if args.output_dir else config.get("default_output_dir")
+    )
+    md_handler = MarkdownHandler(output_dir)
+
+    print("記事一覧を取得中...")
+    success, entries, error = api.get_entry_list(args.limit)
+    if not success:
+        print_error(error or "記事一覧の取得に失敗しました。")
+        return 1
+
+    if not entries:
+        print("取得する記事がありません。")
+        return 0
+
+    total = len(entries)
+    count = 0
+    for entry in entries:
+        entry_id = entry.get("id")
+        print(f"記事ID {entry_id} を取得中...")
+        success, entry_data, error = api.get_entry(entry_id)
+        if not success:
+            print_error(error or f"記事ID '{entry_id}' の取得に失敗しました。")
+            continue
+
+        output_path = md_handler.get_output_path(
+            entry_id, entry_data["title"], created=entry_data.get("created")
+        )
+        print(f"記事を '{output_path}' に保存します。")
+        success, result = md_handler.save_entry_as_markdown(entry_data, output_path)
+        if not success:
+            print_error(result or f"記事ID '{entry_id}' の保存に失敗しました。")
+            continue
+        print_success(f"記事ID '{entry_id}' を保存しました。")
+        count += 1
+
+    print_success(f"{count} 件の記事を保存しました（全 {total} 件中）。")
+    return 0
+
+
 def handle_get(args: argparse.Namespace) -> int:
     """
     getコマンドの処理
@@ -279,8 +360,12 @@ def handle_create(args: argparse.Namespace) -> int:
 
     # 画像のアップロードと置換処理を実行
     base_dir = os.path.dirname(os.path.abspath(args.file))
-    body = md_handler.upload_and_replace_images(body, config, base_dir)
+    new_body = md_handler.upload_and_replace_images(body, config, base_dir)
 
+    # 数式の処理
+    new_body = re.sub(
+        r"\$\$\s*\n(.*?)\n\s*\$\$", r"[tex:\n\1\n]", new_body, flags=re.DOTALL
+    )
     # カテゴリの処理
     if args.categories:
         entry_data["categories"] = parse_categories(args.categories)
@@ -291,7 +376,7 @@ def handle_create(args: argparse.Namespace) -> int:
     # 記事の作成
     success, entry_id, error = api.create_entry(
         entry_data["title"],
-        body,
+        new_body,
         entry_data.get("categories"),
         entry_data["draft"],  # 明示的にdraftフラグを渡す
     )
@@ -347,7 +432,12 @@ def handle_update(args: argparse.Namespace) -> int:
 
     # 画像のアップロードと置換処理を実行
     base_dir = os.path.dirname(os.path.abspath(args.file))
-    body = md_handler.upload_and_replace_images(body, config, base_dir)
+    new_body = md_handler.upload_and_replace_images(body, config, base_dir)
+
+    # 数式の処理
+    new_body = re.sub(
+        r"\$\$\s*\n(.*?)\n\s*\$\$", r"[tex:\n\1\n]", new_body, flags=re.DOTALL
+    )
 
     # 記事IDの処理
     entry_id = None
@@ -375,7 +465,7 @@ def handle_update(args: argparse.Namespace) -> int:
     success, error = api.update_entry(
         entry_id,
         entry_data["title"],
-        body,
+        new_body,
         entry_data.get("categories"),
         entry_data["draft"],  # 明示的にdraftフラグを渡す
     )
@@ -482,6 +572,8 @@ def main() -> int:
         return handle_create(args)
     elif args.command == "update":
         return handle_update(args)
+    elif args.command == "getall":
+        return handle_getall(args)
     elif args.command == "drafts":
         return handle_drafts(args)
     else:
