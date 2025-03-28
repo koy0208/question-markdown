@@ -1,9 +1,3 @@
-"""
-マークダウン処理モジュール
-
-マークダウンファイルの読み書きとFrontMatterの処理を行います。
-"""
-
 import os
 import json
 import base64
@@ -23,6 +17,8 @@ class MarkdownHandler:
     """マークダウンファイル処理クラス"""
 
     FRONTMATTER_PATTERN = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+    HATENA_FOTOLIFE_PATTERN = re.compile(r"\[(f:id:.*?)]")
+    TEX_PATTERN = re.compile(r"\[tex:\s*\n?(.*?)\n?\s*]", re.DOTALL)
 
     def __init__(self, default_output_dir: str = "posts"):
         """
@@ -38,15 +34,23 @@ class MarkdownHandler:
         self.uploaded_images_file = os.path.join(
             self.default_output_dir, "uploaded_images.json"
         )
+        self.uploaded_images = {}
+        self.fotolife_to_local_map = {}  # 逆引き用マップ
         if os.path.exists(self.uploaded_images_file):
             try:
                 with open(self.uploaded_images_file, "r", encoding="utf-8") as f:
                     self.uploaded_images = json.load(f)
+                    # 逆引きマップを作成
+                    self.fotolife_to_local_map = {
+                        v: k for k, v in self.uploaded_images.items()
+                    }
             except Exception as e:
                 print(f"Failed to load uploaded images info: {e}")
                 self.uploaded_images = {}
+                self.fotolife_to_local_map = {}
         else:
             self.uploaded_images = {}
+            self.fotolife_to_local_map = {}
 
     def read_markdown_file(self, file_path: str) -> Tuple[Dict[str, Any], str]:
         """
@@ -128,6 +132,57 @@ class MarkdownHandler:
         """
         return self.h2t.handle(html_content)
 
+    def convert_hatena_fotolife_to_local(self, content: str, output_path: str) -> str:
+        """
+        はてなフォトライフのURLをローカルパスに置換する
+
+        Args:
+            content: マークダウン本文
+            output_path: 保存先のマークダウンファイルのパス
+
+        Returns:
+            置換後のマークダウン本文
+        """
+        output_dir = os.path.dirname(output_path)
+
+        def replacer(match):
+            fotolife_url = match.group(0)  # マッチ全体 "[f:id:...]"
+            if fotolife_url in self.fotolife_to_local_map:
+                absolute_local_path = self.fotolife_to_local_map[fotolife_url]
+                # img/ から始まる部分を直接取得
+                relative_path = absolute_local_path.split("img/")[-1]
+                if not relative_path.startswith("img/"):
+                    relative_path = "img/" + relative_path
+
+                # マークダウンの画像形式にする
+                return f"![]({relative_path})"  # 相対パス指定
+            else:
+                # マップにない場合はそのまま返す
+                return fotolife_url
+
+        return self.HATENA_FOTOLIFE_PATTERN.sub(replacer, content)
+
+    def convert_tex_to_dollar(self, content: str) -> str:
+        """
+        [tex: ... ] 形式を $$ ... $$ 形式に置換する
+        中身が空の場合は置換しない
+
+        Args:
+            content: マークダウン本文
+
+        Returns:
+            置換後のマークダウン本文
+        """
+
+        def replacer(match):
+            tex_content = match.group(1).strip()
+            # 中身が空の場合は元の形式をそのまま返す
+            if not tex_content:
+                return match.group(0)
+            return f"$$\n{tex_content}\n$$"
+
+        return self.TEX_PATTERN.sub(replacer, content)
+
     def get_output_path(
         self,
         entry_id: str,
@@ -142,6 +197,7 @@ class MarkdownHandler:
             entry_id: 記事ID
             title: 記事タイトル
             output_dir: 出力ディレクトリ（省略時はデフォルト）
+            created: 作成日時 (ISO形式文字列)
 
         Returns:
             出力ファイルパス
@@ -149,10 +205,13 @@ class MarkdownHandler:
         # 出力ディレクトリの設定
         if created:
             try:
-                dt = datetime.fromisoformat(created)
+                dt = datetime.fromisoformat(
+                    created.replace("Z", "+00:00")
+                )  # タイムゾーン対応
                 date_folder = dt.strftime("%Y%m%d")
                 dir_path = os.path.join(self.default_output_dir, date_folder)
-            except Exception:
+            except Exception as e:
+                print(f"日付フォルダの生成に失敗: {e}")
                 dir_path = self.default_output_dir
         else:
             dir_path = self.default_output_dir
@@ -160,8 +219,15 @@ class MarkdownHandler:
             dir_path = output_dir
 
         # ファイル名の生成（タイトルからファイル名に使えない文字を除去）
-        safe_title = re.sub(r"[^\w\s-]", "", title).strip().lower()
-        safe_title = re.sub(r"[-\s]+", "-", safe_title)
+        safe_title = re.sub(
+            r'[\\/*?:"<>|]', "", title
+        )  # Windows/Unixで使えない文字を除去
+        safe_title = (
+            re.sub(r"[^\w\s-]", "", safe_title).strip().lower()
+        )  # その他の記号を除去
+        safe_title = re.sub(
+            r"[-\s]+", "-", safe_title
+        )  # スペースや連続ハイフンを単一ハイフンに
 
         # ファイル名が空の場合はIDを使用
         filename = safe_title or entry_id
@@ -185,7 +251,7 @@ class MarkdownHandler:
             output_path: 出力ファイルパス（省略時は自動生成）
 
         Returns:
-            (成功フラグ, 出力ファイルパス)
+            (成功フラグ, 出力ファイルパスまたはエラーメッセージ)
         """
         # 必須フィールドのチェック
         if not all(k in entry_data for k in ["id", "title", "content"]):
@@ -193,18 +259,32 @@ class MarkdownHandler:
 
         # 出力パスの決定
         if not output_path:
-            output_path = self.get_output_path(entry_data["id"], entry_data["title"])
+            output_path = self.get_output_path(
+                entry_data["id"],
+                entry_data["title"],
+                created=entry_data.get("created"),  # created情報を渡す
+            )
 
         # コンテンツタイプに応じた変換
         content = entry_data["content"]
         if entry_data.get("content_type") in ["html", "text/html"]:
             content = self.html_to_markdown(content)
 
+        # --- ここから逆変換 ---
+        # はてなフォトライフURL -> ローカルパス
+        content = self.convert_hatena_fotolife_to_local(content, output_path)
+        # [tex:] -> $$ $$
+        content = self.convert_tex_to_dollar(content)
+        # --- 逆変換ここまで ---
+
         # FrontMatterの作成
         frontmatter = {
             "title": entry_data["title"],
             "id": entry_data["id"],
             "draft": entry_data.get("draft", False),
+            # "created": entry_data.get("created"),  # created を追加
+            # "updated": entry_data.get("updated"),  # updated を追加
+            # "url": entry_data.get("url"),  # url を追加
         }
 
         # カテゴリがあれば追加
@@ -328,11 +408,14 @@ class MarkdownHandler:
         try:
             root = ET.fromstring(response.content)
             syntax = None
-            for elem in root.iter():
-                if "syntax" in elem.tag:
-                    syntax = elem.text
-                    break
+            # 名前空間を考慮して要素を検索
+            ns = {"atom": "http://purl.org/atom/ns#"}
+            syntax_elem = root.find(".//atom:syntax", ns)
+            if syntax_elem is not None:
+                syntax = syntax_elem.text
+
             if syntax:
+                # 取得した syntax を返す (例: f:id:user:yyyymmddhhmmssj:plain)
                 return f"[{syntax}]"
             else:
                 print("レスポンスから[f:id]形式の情報が取得できませんでした")
@@ -343,30 +426,54 @@ class MarkdownHandler:
 
     def upload_and_replace_images(self, body: str, config: dict, base_dir: str) -> str:
         """Markdown本文中のローカル画像を検出し、アップロード後に[f:id:...]形式に置換します.
-        base_dir はマークダウンファイルがあるフォルダのパスを指定してください。画像はこのフォルダ内の 'images' フォルダに配置されていると仮定します。
+        base_dir はマークダウンファイルがあるフォルダのパスを指定してください。画像はこのフォルダ内の 'img' フォルダに配置されていると仮定します。
         """
 
         def replacer(match):
             alt_text = match.group(1)
-            image_path = match.group(2).strip()
-            abs_path = os.path.join(base_dir, "img", os.path.basename(image_path))
+            image_path = match.group(
+                2
+            ).strip()  # ローカルパス (例: img/hoge.png, ./img/fuga.png)
+
+            # base_dir と image_path から絶対パスを計算
+            # image_path が './' で始まる場合を考慮
+            if image_path.startswith("./"):
+                image_path = image_path[2:]
+            abs_path = os.path.abspath(os.path.join(base_dir, image_path))
+
+            # img/ ディレクトリ以外にある場合も考慮 (例: ../img/hoge.png)
+            # ただし、基本は base_dir/img/ 以下を想定
+
             if abs_path in self.uploaded_images:
+                print(
+                    f"キャッシュを使用: {abs_path} -> {self.uploaded_images[abs_path]}"
+                )
                 return self.uploaded_images[abs_path]
+
+            print(f"画像をアップロード中: {abs_path}")
             result = self.upload_image(abs_path, config)
             if result:
+                print(f"アップロード成功: {abs_path} -> {result}")
                 self.uploaded_images[abs_path] = result
                 self.save_uploaded_images()
                 return result
             else:
-                return match.group(0)
+                print(f"アップロード失敗、元のパスを維持: {match.group(0)}")
+                return match.group(0)  # 失敗したら元のマークダウンを返す
 
-        pattern = re.compile(r"!\[(.*?)\]\((?!https?://)(.*?)\)")
+        # ローカル画像パスのパターンを改善 (http/httpsで始まらない、./ や ../ も考慮)
+        pattern = re.compile(r"!\[(.*?)\]\(((?!\s*https?://)\.?\.?/.*?)\)")
         new_body = pattern.sub(replacer, body)
         return new_body
 
     def save_uploaded_images(self):
+        """アップロード済み画像情報をJSONファイルに保存する"""
         try:
+            # 保存前にディレクトリが存在するか確認し、なければ作成
+            os.makedirs(os.path.dirname(self.uploaded_images_file), exist_ok=True)
             with open(self.uploaded_images_file, "w", encoding="utf-8") as f:
-                json.dump(self.uploaded_images, f)
+                json.dump(
+                    self.uploaded_images, f, indent=2, ensure_ascii=False
+                )  # indentとensure_asciiを追加
         except Exception as e:
             print(f"Failed to save uploaded images info: {e}")
