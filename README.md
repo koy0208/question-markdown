@@ -62,6 +62,12 @@ chmod +x question-md
 ./question-md get <entry_id> --output path/to/file.md
 ```
 
+```bash
+./question-md getall
+./question-md getall --limit 10  # 最新10件の記事を取得
+```
+
+
 ### 新規記事の作成
 
 ```bash
